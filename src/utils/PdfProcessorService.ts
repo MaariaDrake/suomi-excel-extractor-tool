@@ -1,4 +1,6 @@
 
+import * as XLSX from 'xlsx';
+
 export interface ProcessResult {
   success: boolean;
   error?: string;
@@ -60,19 +62,21 @@ export class PdfProcessorService {
   }
 
   private static async createExcelFile(data: any[]): Promise<Blob> {
-    // Yksinkertainen CSV-muoto (Excel avaa sen automaattisesti)
-    // Oikeassa toteutuksessa käytettäisiin XLSX-kirjastoa
+    // Luodaan uusi työkirja
+    const workbook = XLSX.utils.book_new();
     
-    const headers = ['Päivämäärä', 'Yhtiö', 'Omistajia', 'Muutos edellinen kuukausi'];
-    const csvContent = [
-      headers.join(';'),
-      ...data.map(row => headers.map(header => row[header] || '').join(';'))
-    ].join('\n');
-
-    // Lisätään BOM UTF-8 tiedoston alkuun
-    const BOM = '\uFEFF';
-    const blob = new Blob([BOM + csvContent], { 
-      type: 'text/csv;charset=utf-8' 
+    // Luodaan taulukko datasta
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    
+    // Lisätään taulukko työkirjaan
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Euroclear Tilastot');
+    
+    // Luodaan Excel-tiedosto binäärimuodossa
+    const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+    
+    // Luodaan Blob oikealla MIME-tyypillä
+    const blob = new Blob([excelBuffer], { 
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
     });
 
     return blob;
