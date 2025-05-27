@@ -93,7 +93,7 @@ export class PdfProcessorService {
           }
         });
         
-        console.log(`Sivu ${pageNum} teksti (ensimmäiset 300 merkkiä):`, pageText.substring(0, 300));
+        console.log(`Sivu ${pageNum} teksti (ensimmäiset 500 merkkiä):`, pageText.substring(0, 500));
         
         // Poimitaan päivämäärä ensimmäiseltä sivulta
         if (pageNum === 1 && !extractedDate) {
@@ -131,35 +131,42 @@ export class PdfProcessorService {
       if (!line || line.length < 5) continue;
       if (line.includes('Päivämäärä') || line.includes('Yhtiö') || line.includes('Omistajia')) continue;
       if (line.includes('Sivu') || line.includes('Page') || line.includes('www.')) continue;
+      if (line.includes('Euroclear') || line.includes('Statistics') || line.includes('Finland')) continue;
+      if (line.includes('Total') || line.includes('Yhteensä')) continue;
       
-      // Etsitään rivejä, jotka sisältävät yhtiön tiedot
-      // Flexible regex to match different formats
-      const patterns = [
-        // Pattern 1: Company name followed by numbers with spaces
-        /^([A-ZÄÖÅÜ][A-ZÄÖÅÜ\s&.-]+(?:OYJ|ABP|AB|LTD|INC|CORP|GROUP|ASA|HOLDING|BANK|COMPANY)?)\s+(\d+(?:\s\d+)*)\s+([+-]?\d+(?:\s\d+)*)$/,
-        // Pattern 2: More flexible pattern for various formats
-        /^([A-ZÄÖÅÜ][A-ZÄÖÅÜ\s&.-]{3,50})\s+(\d[\d\s]{2,15})\s+([+-]?\d[\d\s]{1,10})$/,
-        // Pattern 3: Handle cases with multiple spaces
-        /([A-ZÄÖÅÜ][A-ZÄÖÅÜ\s&.-]+)\s{2,}(\d+(?:\s\d+)*)\s+([+-]?\d+(?:\s\d+)*)/
-      ];
+      // Etsitään numerosarjoja riviltä
+      const numberMatches = line.match(/\d+/g);
+      if (!numberMatches || numberMatches.length < 2) continue;
       
-      let matched = false;
+      // Yksinkertaisempi lähestymistapa: etsitään rivejä jotka sisältävät:
+      // 1. Tekstiä joka alkaa isolla kirjaimella
+      // 2. Vähintään kaksi numerosarjaa
       
-      for (const pattern of patterns) {
-        const match = line.match(pattern);
-        if (match) {
-          let companyName = match[1].trim();
-          let shareholders = match[2].replace(/\s+/g, ' ').trim();
-          let change = match[3].replace(/\s+/g, ' ').trim();
+      // Etsitään yhtiön nimi (alkaa isolla kirjaimella, sisältää kirjaimia)
+      const companyMatch = line.match(/^([A-ZÄÖÅÜ][A-ZÄÖÅÜa-zäöåü\s&.-]+?)(\s+\d+.*)/);
+      
+      if (companyMatch) {
+        let companyName = companyMatch[1].trim();
+        let numbersText = companyMatch[2].trim();
+        
+        // Siivotaan yhtiön nimi
+        companyName = companyName.replace(/[.,;:]+$/, '');
+        
+        // Poimitaan numerot
+        const numbers = numbersText.match(/([+-]?\d+(?:\s\d+)*)/g);
+        
+        if (numbers && numbers.length >= 2) {
+          // Ensimmäinen numero on omistajien määrä, toinen on muutos
+          let shareholders = numbers[0].replace(/\s+/g, ' ').trim();
+          let change = numbers[1].replace(/\s+/g, ' ').trim();
           
-          // Clean company name - remove trailing punctuation and normalize
-          companyName = companyName.replace(/[.,;:]+$/, '');
-          
-          // Validate data quality
+          // Validoidaan tiedot
           if (companyName.length >= 3 && 
               !companyName.includes('Sivu') && 
               !companyName.includes('Page') &&
               !companyName.includes('Statistics') &&
+              !companyName.includes('Finland') &&
+              !companyName.includes('Euroclear') &&
               shareholders.length > 0 &&
               change.length > 0) {
             
@@ -171,15 +178,55 @@ export class PdfProcessorService {
             });
             
             console.log(`Lisätty yhtiö: "${companyName}" | Omistajia: "${shareholders}" | Muutos: "${change}"`);
-            matched = true;
-            break;
           }
         }
-      }
-      
-      // Log unmatched lines that might contain data
-      if (!matched && line.length > 10 && /[A-ZÄÖÅÜ]/.test(line) && /\d/.test(line)) {
-        console.log('Tunnistamaton rivi:', line);
+      } else {
+        // Vaihtoehtoinen tapa: etsitään rivejä joissa on vähintään 2 numerosarjaa
+        if (numberMatches.length >= 2 && /[A-ZÄÖÅÜ]/.test(line)) {
+          // Yritetään jakaa rivi osiin välilyöntien perusteella
+          const parts = line.split(/\s+/);
+          
+          if (parts.length >= 3) {
+            // Ensimmäiset osat ovat todennäköisesti yhtiön nimi
+            let companyParts = [];
+            let numberParts = [];
+            
+            for (let j = 0; j < parts.length; j++) {
+              if (/^\d/.test(parts[j]) || /^[+-]\d/.test(parts[j])) {
+                // Tämä on numero, loput ovat numeroita
+                numberParts = parts.slice(j);
+                break;
+              } else {
+                companyParts.push(parts[j]);
+              }
+            }
+            
+            if (companyParts.length > 0 && numberParts.length >= 2) {
+              let companyName = companyParts.join(' ').trim();
+              companyName = companyName.replace(/[.,;:]+$/, '');
+              
+              let shareholders = numberParts[0];
+              let change = numberParts[1];
+              
+              if (companyName.length >= 3 && 
+                  !companyName.includes('Sivu') && 
+                  !companyName.includes('Page') &&
+                  !companyName.includes('Statistics') &&
+                  !companyName.includes('Finland') &&
+                  !companyName.includes('Euroclear')) {
+                
+                companies.push({
+                  'Päivämäärä': date,
+                  'Yhtiö': companyName,
+                  'Omistajia': shareholders,
+                  'Muutos edellinen kuukausi': change
+                });
+                
+                console.log(`Lisätty (alt): "${companyName}" | Omistajia: "${shareholders}" | Muutos: "${change}"`);
+              }
+            }
+          }
+        }
       }
     }
     
