@@ -1,14 +1,9 @@
-import * as XLSX from 'xlsx';
-import * as pdfjsLib from 'pdfjs-dist';
 
-// Asetetaan worker path
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
-
-export interface ProcessResult {
-  success: boolean;
-  error?: string;
-  downloadUrl?: string;
-}
+import { ProcessResult } from '../types/pdf-processor';
+import { PdfTextExtractor } from './PdfTextExtractor';
+import { CompanyDataParser } from './CompanyDataParser';
+import { ExcelGenerator } from './ExcelGenerator';
+import { MockDataService } from './MockDataService';
 
 export class PdfProcessorService {
   static async convertPdfToExcel(): Promise<ProcessResult> {
@@ -37,7 +32,7 @@ export class PdfProcessorService {
         const extractedData = await this.extractDataFromPdf(pdfArrayBuffer);
         
         // Luodaan Excel-tiedosto
-        const excelBlob = await this.createExcelFile(extractedData);
+        const excelBlob = await ExcelGenerator.createExcelFile(extractedData);
         const downloadUrl = URL.createObjectURL(excelBlob);
 
         console.log('Excel-tiedosto luotu onnistuneesti, rivejä:', extractedData.length);
@@ -52,8 +47,8 @@ export class PdfProcessorService {
         
         // Jos suora lataus epäonnistuu, käytetään mockdataa
         console.log('Siirrytään käyttämään mockdataa...');
-        const mockData = await this.getMockData();
-        const excelBlob = await this.createExcelFile(mockData);
+        const mockData = MockDataService.getMockData();
+        const excelBlob = await ExcelGenerator.createExcelFile(mockData);
         const downloadUrl = URL.createObjectURL(excelBlob);
         
         return {
@@ -71,251 +66,23 @@ export class PdfProcessorService {
     }
   }
 
-  private static async extractDataFromPdf(pdfArrayBuffer: ArrayBuffer): Promise<any[]> {
+  private static async extractDataFromPdf(pdfArrayBuffer: ArrayBuffer) {
     try {
-      console.log('Aloitetaan PDF:n parsinta...');
+      const { text, date } = await PdfTextExtractor.extractTextFromPdf(pdfArrayBuffer);
+      const companies = CompanyDataParser.parseCompanyData(text, date);
       
-      const pdf = await pdfjsLib.getDocument({ data: pdfArrayBuffer }).promise;
-      console.log('PDF ladattu, sivuja yhteensä:', pdf.numPages);
-      
-      let allText = '';
-      let extractedDate = '';
-      
-      // Käydään läpi kaikki sivut
-      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-        const page = await pdf.getPage(pageNum);
-        const textContent = await page.getTextContent();
-        
-        let pageText = '';
-        textContent.items.forEach((item: any) => {
-          if ('str' in item) {
-            pageText += item.str + ' ';
-          }
-        });
-        
-        console.log(`Sivu ${pageNum} teksti (ensimmäiset 500 merkkiä):`, pageText.substring(0, 500));
-        
-        // Poimitaan päivämäärä ensimmäiseltä sivulta
-        if (pageNum === 1 && !extractedDate) {
-          extractedDate = this.extractDateFromPdf(pageText);
-          console.log('Poimittu päivämäärä:', extractedDate);
-        }
-        
-        allText += pageText + '\n';
+      // Jos ei löytynyt yhtään yhtiötä, käytetään mockdataa
+      if (companies.length === 0) {
+        console.log('Ei löytynyt yhtiötietoja, käytetään mockdataa');
+        return MockDataService.getMockData();
       }
-      
-      // Parsitaan yhtiötiedot
-      const companies = this.parseCompanyData(allText, extractedDate);
-      console.log('Poimittu yhtiöitä yhteensä:', companies.length);
       
       return companies;
       
     } catch (error) {
       console.error('Virhe PDF:n parsinnassa:', error);
       // Palautetaan mockdata jos parsinta epäonnistuu
-      return this.getMockData();
+      return MockDataService.getMockData();
     }
-  }
-
-  private static parseCompanyData(text: string, date: string): any[] {
-    const companies: any[] = [];
-    
-    // Jaetaan teksti riveihin
-    const lines = text.split('\n');
-    console.log('Käsitellään rivejä yhteensä:', lines.length);
-    
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      
-      // Ohitetaan tyhjät rivit ja otsikot
-      if (!line || line.length < 5) continue;
-      if (line.includes('Päivämäärä') || line.includes('Yhtiö') || line.includes('Omistajia')) continue;
-      if (line.includes('Sivu') || line.includes('Page') || line.includes('www.')) continue;
-      if (line.includes('Euroclear') || line.includes('Statistics') || line.includes('Finland')) continue;
-      if (line.includes('Total') || line.includes('Yhteensä')) continue;
-      
-      // Etsitään numerosarjoja riviltä
-      const numberMatches = line.match(/\d+/g);
-      if (!numberMatches || numberMatches.length < 2) continue;
-      
-      // Yksinkertaisempi lähestymistapa: etsitään rivejä jotka sisältävät:
-      // 1. Tekstiä joka alkaa isolla kirjaimella
-      // 2. Vähintään kaksi numerosarjaa
-      
-      // Etsitään yhtiön nimi (alkaa isolla kirjaimella, sisältää kirjaimia)
-      const companyMatch = line.match(/^([A-ZÄÖÅÜ][A-ZÄÖÅÜa-zäöåü\s&.-]+?)(\s+\d+.*)/);
-      
-      if (companyMatch) {
-        let companyName = companyMatch[1].trim();
-        let numbersText = companyMatch[2].trim();
-        
-        // Siivotaan yhtiön nimi
-        companyName = companyName.replace(/[.,;:]+$/, '');
-        
-        // Poimitaan numerot
-        const numbers = numbersText.match(/([+-]?\d+(?:\s\d+)*)/g);
-        
-        if (numbers && numbers.length >= 2) {
-          // Ensimmäinen numero on omistajien määrä, toinen on muutos
-          let shareholders = numbers[0].replace(/\s+/g, ' ').trim();
-          let change = numbers[1].replace(/\s+/g, ' ').trim();
-          
-          // Validoidaan tiedot
-          if (companyName.length >= 3 && 
-              !companyName.includes('Sivu') && 
-              !companyName.includes('Page') &&
-              !companyName.includes('Statistics') &&
-              !companyName.includes('Finland') &&
-              !companyName.includes('Euroclear') &&
-              shareholders.length > 0 &&
-              change.length > 0) {
-            
-            companies.push({
-              'Päivämäärä': date,
-              'Yhtiö': companyName,
-              'Omistajia': shareholders,
-              'Muutos edellinen kuukausi': change
-            });
-            
-            console.log(`Lisätty yhtiö: "${companyName}" | Omistajia: "${shareholders}" | Muutos: "${change}"`);
-          }
-        }
-      } else {
-        // Vaihtoehtoinen tapa: etsitään rivejä joissa on vähintään 2 numerosarjaa
-        if (numberMatches.length >= 2 && /[A-ZÄÖÅÜ]/.test(line)) {
-          // Yritetään jakaa rivi osiin välilyöntien perusteella
-          const parts = line.split(/\s+/);
-          
-          if (parts.length >= 3) {
-            // Ensimmäiset osat ovat todennäköisesti yhtiön nimi
-            let companyParts = [];
-            let numberParts = [];
-            
-            for (let j = 0; j < parts.length; j++) {
-              if (/^\d/.test(parts[j]) || /^[+-]\d/.test(parts[j])) {
-                // Tämä on numero, loput ovat numeroita
-                numberParts = parts.slice(j);
-                break;
-              } else {
-                companyParts.push(parts[j]);
-              }
-            }
-            
-            if (companyParts.length > 0 && numberParts.length >= 2) {
-              let companyName = companyParts.join(' ').trim();
-              companyName = companyName.replace(/[.,;:]+$/, '');
-              
-              let shareholders = numberParts[0];
-              let change = numberParts[1];
-              
-              if (companyName.length >= 3 && 
-                  !companyName.includes('Sivu') && 
-                  !companyName.includes('Page') &&
-                  !companyName.includes('Statistics') &&
-                  !companyName.includes('Finland') &&
-                  !companyName.includes('Euroclear')) {
-                
-                companies.push({
-                  'Päivämäärä': date,
-                  'Yhtiö': companyName,
-                  'Omistajia': shareholders,
-                  'Muutos edellinen kuukausi': change
-                });
-                
-                console.log(`Lisätty (alt): "${companyName}" | Omistajia: "${shareholders}" | Muutos: "${change}"`);
-              }
-            }
-          }
-        }
-      }
-    }
-    
-    // Jos ei löytynyt yhtään yhtiötä, käytetään mockdataa
-    if (companies.length === 0) {
-      console.log('Ei löytynyt yhtiötietoja, käytetään mockdataa');
-      return this.getMockData();
-    }
-    
-    console.log(`Yhteensä löydetty ${companies.length} yhtiötä`);
-    return companies;
-  }
-
-  private static getMockData(): any[] {
-    return [
-      {
-        'Päivämäärä': '30.04.2025',
-        'Yhtiö': 'NORDEA BANK ABP',
-        'Omistajia': '362 672',
-        'Muutos edellinen kuukausi': '1 898'
-      },
-      {
-        'Päivämäärä': '30.04.2025',
-        'Yhtiö': 'FORTUM OYJ', 
-        'Omistajia': '224 604',
-        'Muutos edellinen kuukausi': '744'
-      },
-      {
-        'Päivämäärä': '30.04.2025',
-        'Yhtiö': 'NOKIA OYJ',
-        'Omistajia': '224 148',
-        'Muutos edellinen kuukausi': '949'
-      },
-      {
-        'Päivämäärä': '30.04.2025',
-        'Yhtiö': 'MANDATUM OYJ',
-        'Omistajia': '215 202',
-        'Muutos edellinen kuukausi': '778'
-      },
-      {
-        'Päivämäärä': '30.04.2025',
-        'Yhtiö': 'NESTE OYJ',
-        'Omistajia': '199 204',
-        'Muutos edellinen kuukausi': '3 358'
-      },
-      {
-        'Päivämäärä': '30.04.2025',
-        'Yhtiö': 'SAMPO OYJ',
-        'Omistajia': '195 865',
-        'Muutos edellinen kuukausi': '-310'
-      }
-    ];
-  }
-
-  private static async createExcelFile(data: any[]): Promise<Blob> {
-    // Luodaan uusi työkirja
-    const workbook = XLSX.utils.book_new();
-    
-    // Luodaan taulukko datasta
-    const worksheet = XLSX.utils.json_to_sheet(data);
-    
-    // Lisätään taulukko työkirjaan
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Euroclear Tilastot');
-    
-    // Luodaan Excel-tiedosto binäärimuodossa
-    const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-    
-    // Luodaan Blob oikealla MIME-tyypillä
-    const blob = new Blob([excelBuffer], { 
-      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
-    });
-
-    return blob;
-  }
-
-  private static extractDateFromPdf(pdfText: string): string {
-    // Etsitään päivämäärä muodossa pp.kk.vvvv
-    const dateRegex = /(\d{1,2}\.\d{1,2}\.\d{4})/;
-    const match = pdfText.match(dateRegex);
-    
-    if (match) {
-      return match[1];
-    }
-    
-    // Palautetaan nykyinen päivämäärä, jos ei löydy
-    const now = new Date();
-    const day = now.getDate().toString().padStart(2, '0');
-    const month = (now.getMonth() + 1).toString().padStart(2, '0');
-    const year = now.getFullYear();
-    return `${day}.${month}.${year}`;
   }
 }
