@@ -93,7 +93,7 @@ export class PdfProcessorService {
           }
         });
         
-        console.log(`Sivu ${pageNum} teksti:`, pageText.substring(0, 200) + '...');
+        console.log(`Sivu ${pageNum} teksti (ensimmäiset 300 merkkiä):`, pageText.substring(0, 300));
         
         // Poimitaan päivämäärä ensimmäiseltä sivulta
         if (pageNum === 1 && !extractedDate) {
@@ -120,30 +120,66 @@ export class PdfProcessorService {
   private static parseCompanyData(text: string, date: string): any[] {
     const companies: any[] = [];
     
-    // Etsitään rivit, jotka sisältävät yhtiön tiedot
-    // Oletetaan että tiedot ovat muodossa: YHTIÖN NIMI nnn nnn +/-nnn
+    // Jaetaan teksti riveihin
     const lines = text.split('\n');
+    console.log('Käsitellään rivejä yhteensä:', lines.length);
     
-    for (const line of lines) {
-      // Etsitään rivejä joissa on yhtiön nimi ja numerotietoja
-      const companyMatch = line.match(/([A-ZÄÖÅ][A-ZÄÖÅ\s]+(?:OYJ|ABP|AB|LTD)?)\s+(\d+[\s\d]*)\s+([+-]?\d+[\s\d]*)/i);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
       
-      if (companyMatch) {
-        const companyName = companyMatch[1].trim();
-        const shareholders = companyMatch[2].replace(/\s+/g, ' ').trim();
-        const change = companyMatch[3].replace(/\s+/g, ' ').trim();
-        
-        // Suodatetaan pois liian lyhyet nimet tai epärelevantit rivit
-        if (companyName.length > 3 && !companyName.includes('Sivu') && !companyName.includes('Page')) {
-          companies.push({
-            'Päivämäärä': date,
-            'Yhtiö': companyName,
-            'Omistajia': shareholders,
-            'Muutos edellinen kuukausi': change
-          });
+      // Ohitetaan tyhjät rivit ja otsikot
+      if (!line || line.length < 5) continue;
+      if (line.includes('Päivämäärä') || line.includes('Yhtiö') || line.includes('Omistajia')) continue;
+      if (line.includes('Sivu') || line.includes('Page') || line.includes('www.')) continue;
+      
+      // Etsitään rivejä, jotka sisältävät yhtiön tiedot
+      // Flexible regex to match different formats
+      const patterns = [
+        // Pattern 1: Company name followed by numbers with spaces
+        /^([A-ZÄÖÅÜ][A-ZÄÖÅÜ\s&.-]+(?:OYJ|ABP|AB|LTD|INC|CORP|GROUP|ASA|HOLDING|BANK|COMPANY)?)\s+(\d+(?:\s\d+)*)\s+([+-]?\d+(?:\s\d+)*)$/,
+        // Pattern 2: More flexible pattern for various formats
+        /^([A-ZÄÖÅÜ][A-ZÄÖÅÜ\s&.-]{3,50})\s+(\d[\d\s]{2,15})\s+([+-]?\d[\d\s]{1,10})$/,
+        // Pattern 3: Handle cases with multiple spaces
+        /([A-ZÄÖÅÜ][A-ZÄÖÅÜ\s&.-]+)\s{2,}(\d+(?:\s\d+)*)\s+([+-]?\d+(?:\s\d+)*)/
+      ];
+      
+      let matched = false;
+      
+      for (const pattern of patterns) {
+        const match = line.match(pattern);
+        if (match) {
+          let companyName = match[1].trim();
+          let shareholders = match[2].replace(/\s+/g, ' ').trim();
+          let change = match[3].replace(/\s+/g, ' ').trim();
           
-          console.log('Lisätty yhtiö:', companyName, 'Omistajia:', shareholders, 'Muutos:', change);
+          // Clean company name - remove trailing punctuation and normalize
+          companyName = companyName.replace(/[.,;:]+$/, '');
+          
+          // Validate data quality
+          if (companyName.length >= 3 && 
+              !companyName.includes('Sivu') && 
+              !companyName.includes('Page') &&
+              !companyName.includes('Statistics') &&
+              shareholders.length > 0 &&
+              change.length > 0) {
+            
+            companies.push({
+              'Päivämäärä': date,
+              'Yhtiö': companyName,
+              'Omistajia': shareholders,
+              'Muutos edellinen kuukausi': change
+            });
+            
+            console.log(`Lisätty yhtiö: "${companyName}" | Omistajia: "${shareholders}" | Muutos: "${change}"`);
+            matched = true;
+            break;
+          }
         }
+      }
+      
+      // Log unmatched lines that might contain data
+      if (!matched && line.length > 10 && /[A-ZÄÖÅÜ]/.test(line) && /\d/.test(line)) {
+        console.log('Tunnistamaton rivi:', line);
       }
     }
     
@@ -153,6 +189,7 @@ export class PdfProcessorService {
       return this.getMockData();
     }
     
+    console.log(`Yhteensä löydetty ${companies.length} yhtiötä`);
     return companies;
   }
 
