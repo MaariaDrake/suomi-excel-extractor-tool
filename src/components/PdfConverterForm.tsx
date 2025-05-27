@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -71,10 +70,10 @@ export const PdfConverterForm = () => {
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
           <h4 className="font-semibold text-blue-900 mb-2">Lähde:</h4>
           <p className="text-blue-800 text-sm">
-            Euroclear Finland - Lista omistajista yhtiöittäin
+            Euroclear Finland - Osakkeenomistajat (huhtikuu 2025)
           </p>
-          <p className="text-blue-600 text-xs mt-1">
-            https://www.euroclear.com/finland/fi/statistics.html
+          <p className="text-blue-600 text-xs mt-1 break-all">
+            https://www.euroclear.com/dam/EFi/Statistics/Shareholders/Shareholders_20250430.pdf
           </p>
         </div>
 
