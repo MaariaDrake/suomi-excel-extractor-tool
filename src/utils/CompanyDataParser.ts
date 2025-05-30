@@ -12,59 +12,23 @@ export class CompanyDataParser {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       
-      // Ohitetaan tyhjät rivit ja otsikot
-      if (!line || line.length < 5) continue;
-      if (line.includes('Päivämäärä') || line.includes('Yhtiö') || line.includes('Omistajia')) continue;
-      if (line.includes('Sivu') || line.includes('Page') || line.includes('www.')) continue;
-      if (line.includes('Euroclear') || line.includes('Statistics') || line.includes('Finland')) continue;
-      if (line.includes('Total') || line.includes('Yhteensä')) continue;
+      // Ohitetaan tyhjät rivit
+      if (!line || line.length < 3) continue;
       
-      // Etsitään numerosarjoja riviltä
-      const numberMatches = line.match(/\d+/g);
-      if (!numberMatches || numberMatches.length < 2) continue;
+      console.log(`Käsitellään rivi ${i}: "${line}"`);
       
-      // Yksinkertaisempi lähestymistapa: etsitään rivejä jotka sisältävät:
-      // 1. Tekstiä joka alkaa isolla kirjaimella
-      // 2. Vähintään kaksi numerosarjaa
+      // Etsitään rivejä joissa on sekä tekstiä että numeroita
+      const hasLetters = /[A-ZÄÖÅa-zäöå]/.test(line);
+      const numbers = line.match(/\d+/g);
       
-      // Etsitään yhtiön nimi (alkaa isolla kirjaimella, sisältää kirjaimia)
-      const companyMatch = line.match(/^([A-ZÄÖÅÜ][A-ZÄÖÅÜa-zäöåü\s&.-]+?)(\s+\d+.*)/);
-      
-      if (companyMatch) {
-        let companyName = companyMatch[1].trim();
-        let numbersText = companyMatch[2].trim();
-        
-        // Siivotaan yhtiön nimi
-        companyName = companyName.replace(/[.,;:]+$/, '');
-        
-        // Poimitaan numerot
-        const numbers = numbersText.match(/([+-]?\d+(?:\s\d+)*)/g);
-        
-        if (numbers && numbers.length >= 2) {
-          // Ensimmäinen numero on omistajien määrä, toinen on muutos
-          let shareholders = numbers[0].replace(/\s+/g, ' ').trim();
-          let change = numbers[1].replace(/\s+/g, ' ').trim();
-          
-          // Validoidaan tiedot
-          if (this.isValidCompanyData(companyName, shareholders, change)) {
-            companies.push({
-              'Päivämäärä': date,
-              'Yhtiö': companyName,
-              'Omistajia': shareholders,
-              'Muutos edellinen kuukausi': change
-            });
-            
-            console.log(`Lisätty yhtiö: "${companyName}" | Omistajia: "${shareholders}" | Muutos: "${change}"`);
-          }
-        }
-      } else {
-        // Vaihtoehtoinen tapa: etsitään rivejä joissa on vähintään 2 numerosarjaa
-        if (numberMatches.length >= 2 && /[A-ZÄÖÅÜ]/.test(line)) {
-          const parsedData = this.parseAlternativeFormat(line, date);
-          if (parsedData) {
-            companies.push(parsedData);
-            console.log(`Lisätty (alt): "${parsedData['Yhtiö']}" | Omistajia: "${parsedData['Omistajia']}" | Muutos: "${parsedData['Muutos edellinen kuukausi']}"`);
-          }
+      if (hasLetters && numbers && numbers.length >= 1) {
+        // Yritetään parsia rivi
+        const parsedData = this.parseLineToCompanyData(line, date);
+        if (parsedData) {
+          companies.push(parsedData);
+          console.log(`✓ Lisätty: "${parsedData['Yhtiö']}" | Omistajia: "${parsedData['Omistajia']}" | Muutos: "${parsedData['Muutos edellinen kuukausi']}"`);
+        } else {
+          console.log(`✗ Ei voitu parsia: "${line}"`);
         }
       }
     }
@@ -73,18 +37,25 @@ export class CompanyDataParser {
     return companies;
   }
 
-  private static parseAlternativeFormat(line: string, date: string): CompanyData | null {
-    // Yritetään jakaa rivi osiin välilyöntien perusteella
-    const parts = line.split(/\s+/);
+  private static parseLineToCompanyData(line: string, date: string): CompanyData | null {
+    // Yritetään löytää yhtiön nimi ja numerot
     
-    if (parts.length >= 3) {
-      // Ensimmäiset osat ovat todennäköisesti yhtiön nimi
+    // Menetelmä 1: Etsitään yhtiön nimi joka päättyy OYJ:ään tai muuhun yrityspäätteeseen
+    let companyMatch = line.match(/^([A-ZÄÖÅÜ][A-ZÄÖÅÜa-zäöåü\s&.-]+(OYJ|ABP|AB|OY|LTD|INC|CORP|GROUP|ASA))\s+(.+)/i);
+    
+    if (!companyMatch) {
+      // Menetelmä 2: Etsitään mikä tahansa teksti jota seuraa numeroita
+      companyMatch = line.match(/^([A-ZÄÖÅÜ][A-ZÄÖÅÜa-zäöåü\s&.-]+?)\s+(\d.*)$/);
+    }
+    
+    if (!companyMatch) {
+      // Menetelmä 3: Jaetaan välilyöntien perusteella ja etsitään numeroita
+      const parts = line.split(/\s+/);
       let companyParts = [];
       let numberParts = [];
       
       for (let j = 0; j < parts.length; j++) {
         if (/^\d/.test(parts[j]) || /^[+-]\d/.test(parts[j])) {
-          // Tämä on numero, loput ovat numeroita
           numberParts = parts.slice(j);
           break;
         } else {
@@ -92,35 +63,36 @@ export class CompanyDataParser {
         }
       }
       
-      if (companyParts.length > 0 && numberParts.length >= 2) {
-        let companyName = companyParts.join(' ').trim();
-        companyName = companyName.replace(/[.,;:]+$/, '');
+      if (companyParts.length > 0 && numberParts.length >= 1) {
+        const companyName = companyParts.join(' ').trim();
+        const shareholders = numberParts[0] || '';
+        const change = numberParts[1] || '0';
         
-        let shareholders = numberParts[0];
-        let change = numberParts[1];
-        
-        if (this.isValidCompanyData(companyName, shareholders, change)) {
-          return {
-            'Päivämäärä': date,
-            'Yhtiö': companyName,
-            'Omistajia': shareholders,
-            'Muutos edellinen kuukausi': change
-          };
-        }
+        return {
+          'Päivämäärä': date,
+          'Yhtiö': companyName,
+          'Omistajia': shareholders,
+          'Muutos edellinen kuukausi': change
+        };
       }
+    } else {
+      const companyName = companyMatch[1].trim();
+      const numbersText = companyMatch[2] || companyMatch[3] || '';
+      
+      // Poimitaan numerot
+      const numbers = numbersText.match(/([+-]?\d+(?:\s\d+)*)/g) || [];
+      
+      const shareholders = numbers[0] || '';
+      const change = numbers[1] || '0';
+      
+      return {
+        'Päivämäärä': date,
+        'Yhtiö': companyName,
+        'Omistajia': shareholders,
+        'Muutos edellinen kuukausi': change
+      };
     }
     
     return null;
-  }
-
-  private static isValidCompanyData(companyName: string, shareholders: string, change: string): boolean {
-    return companyName.length >= 3 && 
-           !companyName.includes('Sivu') && 
-           !companyName.includes('Page') &&
-           !companyName.includes('Statistics') &&
-           !companyName.includes('Finland') &&
-           !companyName.includes('Euroclear') &&
-           shareholders.length > 0 &&
-           change.length > 0;
   }
 }
